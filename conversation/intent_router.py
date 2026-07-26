@@ -94,11 +94,12 @@ def get_intent(client_type, option):
         if normalized_option.casefold() == item["intent"].casefold():
             return item["intent"]
 
-    # Check for common navigation text inputs
+    # Check for common navigation text inputs (exact matches only)
     if normalized_option.casefold() in {"main menu", "main_menu", "menu", "home", "back", "go back"}:
         return "main_menu"
 
-    if normalized_option.casefold() in {"handover", "human", "agent", "chat"}:
+    # Don't match "handover" as common text - only exact match or button tap
+    if normalized_option.casefold() == "handover":
         return "handover"
 
     return None
