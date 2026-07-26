@@ -131,26 +131,38 @@ async def send_twilio_message(user_id: int, message: OutgoingMessage) -> None:
         logger.warning("Twilio not configured, skipping message send")
         return
     
-    # Determine if it's WhatsApp or SMS based on user_id format
-    # This is a simplified approach - you may need to adjust based on your Twilio setup
     to_number = str(user_id)
-    
-    # Check if this is a WhatsApp number (you may need to adjust this logic)
-    # For now, assume all Twilio messages are SMS unless configured otherwise
     from_number = settings.twilio_phone_number
     
     url = f"https://api.twilio.com/2010-04-01/Accounts/{settings.twilio_account_sid}/Messages.json"
     
-    payload = {
-        "To": f"+{to_number}",
-        "From": from_number,
-        "Body": message.text,
-    }
-    
-    # If WhatsApp is enabled, use WhatsApp format
-    if settings.twilio_whatsapp_enabled:
-        payload["To"] = f"whatsapp:+{to_number}"
-        payload["From"] = f"whatsapp:{from_number}"
+    # Determine if WhatsApp or SMS
+    use_whatsapp = settings.twilio_whatsapp_enabled or to_number.startswith("whatsapp:")
+    if use_whatsapp:
+        payload = {
+            "To": f"whatsapp:+{to_number.replace('whatsapp:', '')}",
+            "From": f"whatsapp:{from_number}",
+            "Body": message.text,
+        }
+        
+        # Add interactive buttons for WhatsApp if reply_markup exists
+        if message.reply_markup:
+            buttons = _build_whatsapp_buttons(message.reply_markup)
+            if buttons:
+                payload["PersistentAction"] = buttons
+    else:
+        # SMS - use text-based menu
+        body_text = message.text
+        if message.reply_markup:
+            menu_text = _build_text_menu(message.reply_markup)
+            if menu_text:
+                body_text = f"{message.text}\n\n{menu_text}"
+        
+        payload = {
+            "To": f"+{to_number}",
+            "From": from_number,
+            "Body": body_text,
+        }
     
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(
@@ -159,6 +171,41 @@ async def send_twilio_message(user_id: int, message: OutgoingMessage) -> None:
             auth=(settings.twilio_account_sid, settings.twilio_auth_token),
         )
         response.raise_for_status()
+
+
+def _build_whatsapp_buttons(reply_markup: dict[str, Any]) -> str | None:
+    """Build WhatsApp interactive button list for Twilio."""
+    # Twilio supports up to 3 buttons for WhatsApp
+    # Format: "list: Title: option1|option2|option3"
+    
+    buttons = []
+    
+    # Try inline_keyboard first
+    inline_rows = reply_markup.get("inline_keyboard")
+    if inline_rows:
+        for row in inline_rows:
+            for button in row:
+                button_text = button.get("text", "").strip()
+                # Remove emoji prefix for cleaner button text
+                button_text = button_text.split(" ", 1)[-1] if " " in button_text else button_text
+                if button_text and len(buttons) < 3:
+                    buttons.append(button_text)
+    
+    # Fall back to keyboard
+    if not buttons:
+        keyboard_rows = reply_markup.get("keyboard")
+        if keyboard_rows:
+            for row in keyboard_rows:
+                for button in row:
+                    button_text = button.get("text", "").strip()
+                    if button_text and len(buttons) < 3:
+                        buttons.append(button_text)
+    
+    if buttons:
+        # Twilio WhatsApp list format
+        return f'list: Choose an option: {"|".join(buttons)}'
+    
+    return None
 
 
 async def process_twilio_update(form_data: dict[str, Any]) -> str:
