@@ -73,6 +73,12 @@ def build_twilio_response(messages: list[OutgoingMessage]) -> str:
     first_message = messages[0]
     text = xml_escape(first_message.text)
     
+    # Convert reply_markup buttons to text menu for Twilio (SMS doesn't support buttons)
+    if first_message.reply_markup:
+        menu_text = _build_text_menu(first_message.reply_markup)
+        if menu_text:
+            text += "\n\n" + xml_escape(menu_text)
+    
     # If there are more messages, append them (limited by Twilio)
     if len(messages) > 1:
         text += "\n\n---\n"
@@ -81,6 +87,42 @@ def build_twilio_response(messages: list[OutgoingMessage]) -> str:
     
     twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{text}</Message></Response>'
     return twiml
+
+
+def _build_text_menu(reply_markup: dict[str, Any]) -> str:
+    """Convert button markup to text menu for SMS platforms."""
+    lines: list[str] = []
+    lines.append("📋 Menu Options:")
+    lines.append("")
+    
+    # Try inline_keyboard first (Telegram style)
+    inline_rows = reply_markup.get("inline_keyboard")
+    if inline_rows:
+        counter = 1
+        for row in inline_rows:
+            for button in row:
+                button_text = button.get("text", "")
+                # Remove emoji prefix for cleaner SMS
+                button_text = button_text.strip()
+                if button_text:
+                    lines.append(f"{counter}. {button_text}")
+                    counter += 1
+        return "\n".join(lines)
+    
+    # Fall back to keyboard (ReplyKeyboardMarkup)
+    keyboard_rows = reply_markup.get("keyboard")
+    if keyboard_rows:
+        counter = 1
+        for row in keyboard_rows:
+            for button in row:
+                button_text = button.get("text", "")
+                button_text = button_text.strip()
+                if button_text:
+                    lines.append(f"{counter}. {button_text}")
+                    counter += 1
+        return "\n".join(lines)
+    
+    return ""
 
 
 async def send_twilio_message(user_id: int, message: OutgoingMessage) -> None:
