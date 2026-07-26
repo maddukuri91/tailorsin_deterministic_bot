@@ -160,3 +160,12 @@ async def twilio_webhook(request: Request) -> str:
     # validate_twilio_signature(signature, form_dict)
     
     return await process_twilio_update(form_dict)
+
+
+# Support legacy /webhook path (without /twilio prefix)
+@router.post("/webhook/legacy")
+async def twilio_webhook_legacy(request: Request) -> str:
+    """Legacy webhook endpoint for backward compatibility."""
+    form_data = await request.form()
+    form_dict = dict(form_data)
+    return await process_twilio_update(form_dict)
