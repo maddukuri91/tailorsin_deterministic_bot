@@ -148,10 +148,26 @@ def build_wati_payload(user_id: int, message: OutgoingMessage) -> dict[str, Any]
         if buttons_text:
             text = f"{text}\n\n{buttons_text}"
 
-    return {
+    payload = {
         "whatsappNumber": str(user_id),
         "messageText": text,
     }
+
+    # Add location button if request_location is in reply_markup
+    if message.reply_markup and message.reply_markup.get("keyboard"):
+        for row in message.reply_markup.get("keyboard", []):
+            for button in row:
+                if button.get("request_location"):
+                    # WATI supports location request buttons
+                    payload["buttons"] = [
+                        {
+                            "text": button.get("text", "📍 Share Location"),
+                            "type": "location"
+                        }
+                    ]
+                    break
+
+    return payload
 
 
 async def send_wati_message(user_id: int, message: OutgoingMessage) -> None:

@@ -57,6 +57,7 @@ class SessionState:
     awaiting_address_location: bool = False
     pending_address_lat: float | None = None
     pending_address_lng: float | None = None
+    awaiting_manual_coordinates: bool = False
     last_activity_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:

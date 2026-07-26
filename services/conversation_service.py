@@ -383,6 +383,7 @@ def clear_address_update_flow(session: Any) -> None:
     session.awaiting_address_location = False
     session.pending_address_lat = None
     session.pending_address_lng = None
+    session.awaiting_manual_coordinates = False
 
 
 def clear_pickup_flow(session: Any) -> None:
@@ -1184,12 +1185,14 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
                 text=with_footer(
                     "📍 Would you like to share your current location for accurate pickup?\n\n"
                     "1. Share location (tap the location button if available)\n"
-                    "2. Skip — I'll auto-detect from your address"
+                    "2. Enter location manually — I'll enter lat,lng\n"
+                    "3. Skip — I'll auto-detect from your address"
                 ),
                 reply_markup={
                     "keyboard": [
                         [{"text": "📍 Share Location", "request_location": True}],
-                        [{"text": "2. Skip"}],
+                        [{"text": "2. Enter manually"}],
+                        [{"text": "3. Skip"}],
                     ],
                     "resize_keyboard": True,
                     "one_time_keyboard": True,
@@ -1223,7 +1226,29 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
             )
         else:
             normalized_text = (message.text or "").strip().casefold()
-            if normalized_text in {"2", "skip", "skip location", "no"}:
+            # Handle button taps like "2. Enter manually" or "3. Skip"
+            button_text = normalized_text
+            if "." in normalized_text:
+                parts = normalized_text.split(".", 1)
+                if parts[0].strip().isdigit():
+                    button_text = parts[1].strip()
+            
+            if button_text in {"enter manually", "enter location manually"} or normalized_text in {"2", "2. enter manually"}:
+                # User wants to enter coordinates manually
+                existing_session.awaiting_address_location = False
+                existing_session.awaiting_manual_coordinates = True
+                return [
+                    OutgoingMessage(
+                        text=with_footer(
+                            "📍 Please enter the latitude and longitude for your location.\n\n"
+                            "Format: latitude,longitude\n"
+                            "Example: 17.3850,78.4867\n\n"
+                            "You can get coordinates from Google Maps or any map app."
+                        ),
+                        reply_markup=build_nav_keyboard(),
+                    )
+                ]
+            elif button_text in {"skip", "skip location", "no"} or normalized_text in {"3", "3. skip"}:
                 # User skipped location — try auto-geocoding
                 mobile_for_address = derive_mobile_from_message(message, existing_mobile)
                 address_line = existing_session.pending_address_line
@@ -1262,17 +1287,176 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
             else:
                 return [
                     OutgoingMessage(
-                        text=with_footer("Please reply 2 to skip location sharing, or use the location button to share your current location."),
+                        text=with_footer("Invalid choice. Please tap a button above or reply 2 to enter coordinates manually, 3 to skip."),
                         reply_markup={
                             "keyboard": [
                                 [{"text": "📍 Share Location", "request_location": True}],
-                                [{"text": "2. Skip"}],
+                                [{"text": "2. Enter manually"}],
+                                [{"text": "3. Skip"}],
                             ],
                             "resize_keyboard": True,
                             "one_time_keyboard": True,
                         },
                     )
                 ]
+
+        # If this address was added as part of the pickup flow, continue the pickup
+        if add_result.success and existing_session.pickup_mode is not None:
+            recheck = await fetch_client_addresses(mobile_for_address)
+            pickup_date = existing_session.pending_pickup_date
+            pickup_time = existing_session.pending_pickup_time
+
+            # Date/time already collected → schedule now using the saved address
+            if recheck.success and len(recheck.addresses) >= 1 and pickup_date and pickup_time is not None:
+                chosen_address_id = recheck.addresses[0].address_id
+                retry_schedule_func = schedule_another_pickup if existing_session.pickup_mode == "another" else schedule_fresh_pickup
+                retry_result = await retry_schedule_func(
+                    mobile_for_address, pickup_date, pickup_time, address_id=chosen_address_id,
+                )
+                clear_pickup_flow(existing_session)
+                if retry_result.success:
+                    await save_client_profile(
+                        message.user_id,
+                        mobile_for_address,
+                        "active_client",
+                        existing_customer_salutation,
+                    )
+                    _, _, updated_salutation = await get_client_profile(message.user_id)
+                    return [
+                        OutgoingMessage(text=add_result.message),
+                        OutgoingMessage(text=retry_result.message),
+                        await build_main_menu_response(message.user_id, "active_client", updated_salutation),
+                    ]
+                if retry_result.needs_address:
+                    # Still no usable address — ask to add again
+                    existing_session.address_needed_for_pickup = True
+                    existing_session.awaiting_address_action = True
+                    return [
+                        OutgoingMessage(text=add_result.message),
+                        OutgoingMessage(
+                            text=with_footer("We still could not use that address for pickup. Please reply 1 to add a new address."),
+                            reply_markup=build_nav_keyboard(),
+                        ),
+                    ]
+                return [
+                    OutgoingMessage(text=add_result.message),
+                    OutgoingMessage(text=retry_result.message),
+                ]
+
+            # Date/time not yet collected — continue the flow
+            if recheck.success and len(recheck.addresses) == 1:
+                existing_session.address_needed_for_pickup = False
+                existing_session.pending_pickup_address_id = recheck.addresses[0].address_id
+                existing_session.awaiting_pickup_date = True
+                pickup_intro = "Address added. Please choose pickup date:"
+                if existing_session.pickup_mode == "alteration":
+                    pickup_intro = "Address added. Please choose alteration/another pickup date:"
+                return [
+                    OutgoingMessage(text=add_result.message),
+                    OutgoingMessage(
+                        text=with_footer(
+                            f"{pickup_intro}\n"
+                            "1. Today's date\n"
+                            "2. Tomorrow's date\n"
+                            "3. Day after tomorrow"
+                        ),
+                        reply_markup=build_pickup_date_reply_markup(),
+                    ),
+                ]
+
+            if recheck.success and len(recheck.addresses) > 1:
+                existing_session.address_needed_for_pickup = False
+                existing_session.awaiting_pickup_address = True
+                existing_session.pending_address_ordered_ids = [a.address_id for a in recheck.addresses]
+
+                address_lines = []
+                if recheck.customer_name:
+                    address_lines.append(f"Saved addresses for {recheck.customer_name}:")
+                else:
+                    address_lines.append("Saved addresses:")
+                address_lines.append("")
+                for index, address in enumerate(recheck.addresses, start=1):
+                    main_tag = " (Main)" if address.is_main else ""
+                    location_parts = [part for part in [address.address1, address.city, address.pincode] if part]
+                    address_lines.append(f"{index}. {', '.join(location_parts)}{main_tag}")
+                address_lines.extend([
+                    "",
+                    "Reply with the number of the address you'd like to use for this pickup,",
+                    "or reply 'add' to add another address.",
+                ])
+                return [
+                    OutgoingMessage(text=add_result.message),
+                    OutgoingMessage(
+                        text=with_footer("\n".join(address_lines)),
+                        reply_markup=build_nav_keyboard(),
+                    ),
+                ]
+
+            # Still no address saved
+            existing_session.address_needed_for_pickup = True
+            existing_session.awaiting_address_action = True
+            return [
+                OutgoingMessage(text=add_result.message),
+                OutgoingMessage(
+                    text=with_footer("We could not save that address. Please reply 1 to add a new address."),
+                    reply_markup=build_nav_keyboard(),
+                ),
+            ]
+
+        return [
+            OutgoingMessage(
+                text=with_footer(add_result.message),
+                reply_markup=build_menu_reply_markup(existing_client_type or "client"),
+            )
+        ]
+
+    if existing_session.awaiting_manual_coordinates:
+        # Handle manual coordinate entry
+        normalized_text = (message.text or "").strip()
+        if normalized_text == "← Back to main menu":
+            clear_address_update_flow(existing_session)
+            return [await build_main_menu_response(message.user_id, existing_client_type or "client", existing_customer_salutation)]
+
+        # Parse coordinates in format: latitude,longitude
+        try:
+            parts = normalized_text.split(",")
+            if len(parts) != 2:
+                raise ValueError("Invalid format")
+
+            lat = float(parts[0].strip())
+            lng = float(parts[1].strip())
+
+            # Basic validation
+            if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+                raise ValueError("Coordinates out of range")
+        except (ValueError, AttributeError):
+            return [
+                OutgoingMessage(
+                    text=with_footer("Invalid format. Please enter coordinates as: latitude,longitude\nExample: 17.3850,78.4867"),
+                    reply_markup=build_nav_keyboard(),
+                )
+            ]
+
+        # Valid coordinates received - save the address
+        mobile_for_address = derive_mobile_from_message(message, existing_mobile)
+        address_line = existing_session.pending_address_line
+        city = existing_session.pending_address_city
+        pincode = existing_session.pending_address_pincode or ""
+
+        clear_address_update_flow(existing_session)
+
+        if not mobile_for_address or not address_line or not city:
+            return [
+                OutgoingMessage(
+                    text=with_footer("Unable to add address due to missing details. Please choose option 8 again."),
+                    reply_markup=build_menu_reply_markup(existing_client_type or "client"),
+                )
+            ]
+
+        add_result = await add_client_address(
+            mobile_for_address, address_line, city, pincode,
+            lat=lat, lng=lng,
+        )
 
         # If this address was added as part of the pickup flow, continue the pickup
         if add_result.success and existing_session.pickup_mode is not None:
