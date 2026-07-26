@@ -14,6 +14,11 @@ class Settings:
     wati_webhook_secret = os.getenv("WATI_WEBHOOK_SECRET", "")
     redis_url = os.getenv("REDIS_URL", "")
     http_timeout = float(os.getenv("HTTP_TIMEOUT", "20"))
+    # Twilio settings
+    twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    twilio_phone_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    twilio_whatsapp_enabled = os.getenv("TWILIO_WHATSAPP_ENABLED", "false").lower() == "true"
 
 
 settings = Settings()
