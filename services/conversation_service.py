@@ -250,6 +250,7 @@ def build_pickup_time_reply_markup() -> dict[str, Any]:
         "keyboard": [
             [{"text": "1. Morning (9 AM - 2 PM)"}],
             [{"text": "2. Afternoon (2 PM - 9 PM)"}],
+            [{"text": "← Back to main menu"}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True,
@@ -287,7 +288,9 @@ def get_pickup_date_choices() -> list[tuple[str, str]]:
 def build_pickup_date_reply_markup() -> dict[str, Any]:
     choices = get_pickup_date_choices()
     return {
-        "keyboard": [[{"text": f"{index}. {value}"}] for index, value in choices],
+        "keyboard": [
+            [{"text": f"{index}. {value}"}] for index, value in choices
+        ] + [[{"text": "← Back to main menu"}]],
         "resize_keyboard": True,
         "one_time_keyboard": True,
     }
@@ -295,6 +298,10 @@ def build_pickup_date_reply_markup() -> dict[str, Any]:
 
 def parse_pickup_date_option(raw_text: str) -> str | None:
     normalized_text = (raw_text or "").strip()
+
+    if normalized_text == "← Back to main menu":
+        return None
+
     choice_lookup = {index: value for index, value in get_pickup_date_choices()}
 
     if normalized_text in choice_lookup:
@@ -318,7 +325,9 @@ def parse_pickup_date_option(raw_text: str) -> str | None:
 
 def build_visit_slot_reply_markup(slots: list[str]) -> dict[str, Any]:
     return {
-        "keyboard": [[{"text": f"{index + 1}. {slot}"}] for index, slot in enumerate(slots)],
+        "keyboard": [
+            [{"text": f"{index + 1}. {slot}"}] for index, slot in enumerate(slots)
+        ] + [[{"text": "← Back to main menu"}]],
         "resize_keyboard": True,
         "one_time_keyboard": True,
     }
@@ -634,6 +643,10 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
     if existing_session.awaiting_pickup_date:
         pickup_date = parse_pickup_date_option(message.text)
         if pickup_date is None:
+            # Check if user tapped the back button
+            if (message.text or "").strip() == "← Back to main menu":
+                clear_all_flows(existing_session)
+                return [await build_main_menu_response(message.user_id, existing_client_type or "client", existing_customer_salutation)]
             return [
                 OutgoingMessage(
                     text=with_footer(
@@ -659,6 +672,9 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
     if existing_session.awaiting_pickup_time:
         pickup_time = parse_pickup_time_option(message.text)
         if pickup_time is None:
+            if (message.text or "").strip() == "← Back to main menu":
+                clear_all_flows(existing_session)
+                return [await build_main_menu_response(message.user_id, existing_client_type or "client", existing_customer_salutation)]
             return [
                 OutgoingMessage(
                     text=with_footer("Please choose a valid pickup slot: 1 for Morning or 2 for Afternoon."),
@@ -956,6 +972,10 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
     if existing_session.awaiting_visit_date:
         visit_date = parse_pickup_date_option(message.text)
         if visit_date is None:
+            # Check if user tapped the back button
+            if (message.text or "").strip() == "← Back to main menu":
+                clear_all_flows(existing_session)
+                return [await build_main_menu_response(message.user_id, existing_client_type or "client", existing_customer_salutation)]
             return [
                 OutgoingMessage(
                     text=with_footer(
@@ -994,6 +1014,10 @@ async def handle_incoming_message(message: IncomingMessage) -> list[OutgoingMess
         ]
 
     if existing_session.awaiting_visit_time:
+        if (message.text or "").strip() == "← Back to main menu":
+            clear_all_flows(existing_session)
+            return [await build_main_menu_response(message.user_id, existing_client_type or "client", existing_customer_salutation)]
+        
         selected_slot = parse_visit_slot_option(message.text, existing_session.pending_visit_slots)
         if selected_slot is None:
             return [
