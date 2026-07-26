@@ -75,7 +75,9 @@ def get_intent(client_type, option):
 
     # Also try matching after stripping emojis (for button taps).
     # plain_option already has numeric prefix stripped if present.
-    match_option = plain_option
+    # Strip whitespace to handle cases where emoji removal left leading/trailing spaces
+    # (e.g. "🔍 Track my order" -> emoji stripped -> " Track my order").
+    match_option = plain_option.strip()
 
     for item in menu:
         label = item["label"]
@@ -88,6 +90,14 @@ def get_intent(client_type, option):
         # If the button text matches the label (possibly with emoji)
         if match_option.casefold() == label.casefold():
             return item["intent"]
+        # Also try matching strip-emoji version against label
+        if match_option.casefold() == _strip_emoji(label).casefold():
+            return item["intent"]
+        # Try matching inner text without emoji AND without any prefix numbering
+        if "." in match_option:
+            inner = match_option.split(".", 1)[1].strip()
+            if inner.casefold() in candidates:
+                return item["intent"]
 
     # Allow bare intent names as input
     for item in menu:

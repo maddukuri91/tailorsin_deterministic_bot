@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 if not settings.telegram_bot_token:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
-if not settings.telegram_webhook_secret:
-    raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is required")
-
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 webhook_router = APIRouter(prefix="", tags=["telegram_webhook"])
@@ -33,6 +30,10 @@ def extract_callback_query(update: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def validate_webhook_secret(path_secret: str | None, header_secret: str | None) -> None:
+    # Skip validation if TELEGRAM_WEBHOOK_SECRET is not configured
+    if not settings.telegram_webhook_secret:
+        return
+    
     if path_secret is not None:
         if path_secret != settings.telegram_webhook_secret:
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
